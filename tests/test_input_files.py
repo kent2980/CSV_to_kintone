@@ -109,3 +109,29 @@ def test_csv_still_supported(tmp_path):
     path = tmp_path / "data.csv"
     path.write_text("name\na\n", encoding="utf-8")
     assert read_input_file(str(path)) == read_csv(str(path))
+
+
+def test_cp932_csv_with_japanese_headers(tmp_path):
+    path = tmp_path / "shift_jis.csv"
+    path.write_bytes("指図,機種名\\n001,基板A\\n".replace("\\n", "\n").encode("cp932"))
+    assert read_input_file(str(path)) == (
+        ["指図", "機種名"],
+        [{"指図": "001", "機種名": "基板A"}],
+    )
+
+
+def test_utf8_bom_csv_still_supported(tmp_path):
+    path = tmp_path / "utf8.csv"
+    path.write_text("指図,機種名\\n001,基板A\\n".replace("\\n", "\n"), encoding="utf-8-sig")
+    assert read_input_file(str(path))[1] == [{"指図": "001", "機種名": "基板A"}]
+
+
+def test_invalid_csv_encoding_does_not_delete(tmp_path):
+    from csv_to_kintone.core import ImportJob, execute_import
+    from test_core import FakeClient
+    path = tmp_path / "broken.csv"
+    path.write_bytes(b"\\x81".decode("unicode_escape").encode("latin1"))
+    client = FakeClient()
+    result = execute_import(ImportJob("id", "job", str(path), 1), client, str(tmp_path))
+    assert result.status == "failed"
+    assert client.deleted == []
