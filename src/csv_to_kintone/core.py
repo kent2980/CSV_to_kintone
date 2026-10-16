@@ -30,6 +30,40 @@ class ImportResult:
     backup_path: str | None = None
     error_message: str | None = None
 
+def normalize_headers(headers: list) -> list[str]:
+    """重複列名を連番で一意化し、空欄は拒否します。
+
+    Args:
+        headers: 元ファイルの列名一覧。
+    Returns:
+        一意な列名一覧。既存の「OUM_2」等との衝突も回避します。
+    Raises:
+        ValueError: 列名が存在しない、または空欄の場合。
+    Side effects:
+        なし。元ファイルや入力リストは変更しません。
+    """
+    names = [str(name).strip() if name is not None else "" for name in headers]
+    if not names or any(not name for name in names):
+        raise ValueError("CSV/Excelヘッダーが不正です（空欄があります）")
+    reserved = set(names)
+    used = set()
+    counts = {}
+    result = []
+    for name in names:
+        counts[name] = counts.get(name, 0) + 1
+        candidate = name
+        if candidate in used:
+            number = counts[name]
+            candidate = f"{name}_{number}"
+            while candidate in used or candidate in reserved:
+                number += 1
+                candidate = f"{name}_{number}"
+            counts[name] = number
+        used.add(candidate)
+        result.append(candidate)
+    return result
+
+
 def read_csv(path: str):
     """CSVヘッダーとデータを読み込み、空データや不正行を拒否します。"""
     raw = Path(path).read_bytes()
@@ -44,9 +78,8 @@ def read_csv(path: str):
         raise ValueError("CSVの文字コードを判定できません。UTF-8またはCP932で保存してください")
     import io
     reader = csv.DictReader(io.StringIO(decoded, newline=""))
-    columns = reader.fieldnames or []
-    if not columns or len(set(columns)) != len(columns) or any(not c for c in columns):
-        raise ValueError("CSVヘッダーが不正です")
+    columns = normalize_headers(reader.fieldnames or [])
+    reader.fieldnames = columns
     rows = list(reader)
     if not rows or any(None in row or None in row.values() for row in rows):
         raise ValueError("CSVが空、または不正な行があります")
@@ -95,9 +128,7 @@ def read_input_file(path: str) -> tuple[list[str], list[dict[str, str]]]:
         next(cached_iterator, None)
         if not header:
             raise ValueError("Excelヘッダーが不正です")
-        columns = [str(value).strip() if value is not None else "" for value in header]
-        if not all(columns) or len(columns) != len(set(columns)):
-            raise ValueError("Excelヘッダーが空欄または重複しています")
+        columns = normalize_headers(header)
         rows = []
         for number, cells in enumerate(iterator, start=2):
             cached_values = next(cached_iterator, ())
