@@ -253,13 +253,19 @@ def execute_import(job: ImportJob, client, backup_dir: str, progress=None) -> Im
             report(30, "更新・追加を実行中")
             for offset in range(0, len(updated), 100):
                 batch = updated[offset:offset + 100]
-                client.update(job.app_id, batch)
+                try:
+                    client.update(job.app_id, batch)
+                except Exception as error:
+                    raise ValueError(f"更新バッチ {offset // 100 + 1}（更新対象 {offset + 1}～{offset + len(batch)}件目）失敗: {error}") from error
                 result.updated += len(batch)
                 processed += len(batch)
                 report(30 + int(69 * processed / max(total, 1)), "更新・追加を実行中")
             for offset in range(0, len(added), 100):
                 batch = added[offset:offset + 100]
-                client.add(job.app_id, batch)
+                try:
+                    client.add(job.app_id, batch)
+                except Exception as error:
+                    raise ValueError(f"追加バッチ {offset // 100 + 1}（追加対象 {offset + 1}～{offset + len(batch)}件目）失敗。既に追加済み {result.created}件: {error}") from error
                 result.created += len(batch)
                 processed += len(batch)
                 report(30 + int(69 * processed / max(total, 1)), "更新・追加を実行中")
