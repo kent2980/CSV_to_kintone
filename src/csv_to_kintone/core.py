@@ -192,8 +192,10 @@ def execute_import(job: ImportJob, client, backup_dir: str) -> ImportResult:
             seen, added, updated = set(), [], []
             for row, record in zip(rows, payload):
                 key = tuple(row[col] for col in keys)
-                if key in seen or any(not value.strip() for value in key):
-                    raise ValueError("CSV内に空欄・重複キーがあります")
+                if any(not value.strip() for value in key):
+                    continue
+                if key in seen:
+                    raise ValueError("CSV内に重複キーがあります")
                 seen.add(key)
                 if key in index:
                     updated.append({"id": index[key]["$id"]["value"], "record": record})
