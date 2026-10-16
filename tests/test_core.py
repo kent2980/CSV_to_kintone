@@ -170,3 +170,31 @@ def test_add_failure_reports_batch_and_partial_count(tmp_path):
     assert "追加バッチ 2" in result.error_message
     assert "101" in result.error_message
     assert "CB_VA01" in result.error_message
+
+
+def test_duplicate_unique_value_skips_only_conflicting_record(tmp_path):
+    path = tmp_path / "data.csv"
+    path.write_text("name\nold\nnew\n", encoding="utf-8")
+    client = FakeClient()
+    client.records = lambda app_id: []
+    def add(app_id, records):
+        if any(record["name"]["value"] == "old" for record in records):
+            raise ValueError("kintone API POST records.json: HTTP 400 - CB_VA01: 入力内容が正しくありません。 | fields: {\u0027records[0].name.value\u0027: {\u0027messages\u0027: [\u0027値がほかのレコードと重複しています。\u0027]}}")
+        client.added.extend(records)
+    client.add = add
+    result = execute_import(ImportJob("id", "job", str(path), 1), client, str(tmp_path))
+    assert result.status == "success"
+    assert result.created == 1
+    assert result.skipped == 1
+    assert [x["name"]["value"] for x in client.added] == ["new"]
+
+
+def test_nonduplicate_error_is_not_skipped(tmp_path):
+    path = tmp_path / "data.csv"
+    path.write_text("name\nnew\n", encoding="utf-8")
+    client = FakeClient()
+    client.records = lambda app_id: []
+    client.add = lambda *args: (_ for _ in ()).throw(ValueError("CB_VA01: required field missing"))
+    result = execute_import(ImportJob("id", "job", str(path), 1), client, str(tmp_path))
+    assert result.status == "failed"
+    assert result.skipped == 0
