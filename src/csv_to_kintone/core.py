@@ -32,12 +32,22 @@ class ImportResult:
 
 def read_csv(path: str):
     """CSVヘッダーとデータを読み込み、空データや不正行を拒否します。"""
-    with open(path, encoding="utf-8-sig", newline="") as stream:
-        reader = csv.DictReader(stream)
-        columns = reader.fieldnames or []
-        if not columns or len(set(columns)) != len(columns) or any(not c for c in columns):
-            raise ValueError("CSVヘッダーが不正です")
-        rows = list(reader)
+    raw = Path(path).read_bytes()
+    decoded = None
+    for encoding in ("utf-8-sig", "cp932"):
+        try:
+            decoded = raw.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    if decoded is None:
+        raise ValueError("CSVの文字コードを判定できません。UTF-8またはCP932で保存してください")
+    import io
+    reader = csv.DictReader(io.StringIO(decoded, newline=""))
+    columns = reader.fieldnames or []
+    if not columns or len(set(columns)) != len(columns) or any(not c for c in columns):
+        raise ValueError("CSVヘッダーが不正です")
+    rows = list(reader)
     if not rows or any(None in row or None in row.values() for row in rows):
         raise ValueError("CSVが空、または不正な行があります")
     return columns, rows
