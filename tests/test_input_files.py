@@ -1,7 +1,7 @@
 """CSV / XLSXの入力検証。"""
 from datetime import date, datetime
 from zipfile import ZipFile, ZIP_DEFLATED
-import re
+from xml.etree import ElementTree as ET
 from openpyxl import Workbook
 import pytest
 from csv_to_kintone.core import read_csv, read_input_file
@@ -57,9 +57,17 @@ def test_xlsx_formula_with_cached_result(tmp_path):
     with ZipFile(path, "w") as archive:
         for item, data in members:
             if item.filename == "xl/worksheets/sheet1.xml":
-                xml = data.decode("utf-8")
-                xml = re.sub(r'(<f>1\\+2</f><v>)(</v>)', r'\\g<1>3\\2', xml)
-                data = xml.encode("utf-8")
+                root = ET.fromstring(data)
+                namespace = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+                cell = root.find(f".//{namespace}c[@r='B2']")
+                assert cell is not None
+                formula = cell.find(f"{namespace}f")
+                assert formula is not None and formula.text == "1+2"
+                cached = cell.find(f"{namespace}v")
+                if cached is None:
+                    cached = ET.SubElement(cell, f"{namespace}v")
+                cached.text = "3"
+                data = ET.tostring(root, encoding="utf-8", xml_declaration=True)
             archive.writestr(item, data)
     columns, rows = read_input_file(str(path))
     assert columns == ["name", "total"]
