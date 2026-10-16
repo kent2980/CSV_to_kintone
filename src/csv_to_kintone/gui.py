@@ -129,17 +129,17 @@ class App(ctk.CTk):
     def build_editor(self):
         tab = self.tabs.tab("インポート設定")
         self.inputs = {}
-        for key, label in (("id", "ジョブID"), ("name", "ジョブ名"), ("csv_path", "CSVパス"), ("app_id", "アプリID"), ("interval_minutes", "実行間隔（分）"), ("field_mapping", "マッピングJSON（CSV列名: フィールドラベル）"), ("duplicate_columns", "重複チェック列（カンマ区切り）")):
+        for key, label in (("id", "ジョブID"), ("name", "ジョブ名"), ("csv_path", "入力ファイル（CSV / XLSX）"), ("app_id", "アプリID"), ("interval_minutes", "実行間隔（分）"), ("field_mapping", "マッピングJSON（CSV列名: フィールドラベル）"), ("duplicate_columns", "重複チェック列（カンマ区切り）")):
             ctk.CTkLabel(tab, text=label).pack(anchor="w")
             entry = ctk.CTkEntry(tab, width=650)
             entry.pack(pady=3)
             self.inputs[key] = entry
-        ctk.CTkButton(tab, text="CSVファイルを選択", command=self.pick_csv).pack(pady=4)
+        ctk.CTkButton(tab, text="CSV / XLSXファイルを選択", command=self.pick_csv).pack(pady=4)
         ctk.CTkButton(tab, text="追加・更新", command=self.save_job).pack(pady=12)
 
     def pick_csv(self):
         """ファイル選択ダイアログからCSVパスを入力します。"""
-        path = filedialog.askopenfilename(filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
+        path = filedialog.askopenfilename(filetypes=[("CSV / Excel files", "*.csv *.xlsx"), ("CSV files", "*.csv"), ("Excel files", "*.xlsx")])
         if path:
             self.inputs["csv_path"].delete(0, "end")
             self.inputs["csv_path"].insert(0, path)
