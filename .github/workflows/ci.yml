@@ -32,7 +32,10 @@ jobs:
         run: python -m pytest -q
 
       - name: Build Windows executable
-        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name CSV_to_kintone --collect-all customtkinter --hidden-import win32crypt --paths src src/csv_to_kintone/__main__.py
+        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name CSV_to_kintone --collect-all customtkinter --hidden-import win32crypt --paths src run_gui.py
+
+      - name: Smoke test packaged entrypoint imports
+        run: python -c "from csv_to_kintone.gui import main; assert callable(main)"
 
       - name: Upload Windows executable
         uses: actions/upload-artifact@v4
