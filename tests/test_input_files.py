@@ -31,10 +31,9 @@ def test_xlsx_empty_data_is_rejected(tmp_path):
         read_input_file(str(path))
 
 
-def test_xlsx_duplicate_header_is_rejected(tmp_path):
+def test_xlsx_duplicate_header_is_numbered(tmp_path):
     path = workbook(tmp_path, ["name", "name"], [["a", "b"]])
-    with pytest.raises(ValueError, match="ヘッダー"):
-        read_input_file(str(path))
+    assert read_input_file(str(path)) == (["name", "name_2"], [{"name": "a", "name_2": "b"}])
 
 
 def test_xlsx_blank_header_is_rejected(tmp_path):
@@ -135,3 +134,28 @@ def test_invalid_csv_encoding_does_not_delete(tmp_path):
     result = execute_import(ImportJob("id", "job", str(path), 1), client, str(tmp_path))
     assert result.status == "failed"
     assert client.deleted == []
+
+
+def test_csv_duplicate_headers_are_numbered(tmp_path):
+    path = tmp_path / "duplicate.csv"
+    path.write_text("ID,OUM,OUM,OUM\\n1,a,b,c\\n".replace("\\n", "\n"), encoding="utf-8")
+    assert read_csv(str(path)) == (
+        ["ID", "OUM", "OUM_2", "OUM_3"],
+        [{"ID": "1", "OUM": "a", "OUM_2": "b", "OUM_3": "c"}],
+    )
+
+
+def test_duplicate_header_numbering_avoids_existing_names(tmp_path):
+    path = tmp_path / "collision.csv"
+    path.write_text("OUM,OUM_2,OUM\\na,b,c\\n".replace("\\n", "\n"), encoding="utf-8")
+    assert read_csv(str(path)) == (
+        ["OUM", "OUM_2", "OUM_3"],
+        [{"OUM": "a", "OUM_2": "b", "OUM_3": "c"}],
+    )
+
+
+def test_csv_blank_header_still_rejected(tmp_path):
+    path = tmp_path / "blank.csv"
+    path.write_text("ID,,OUM\\n1,a,b\\n".replace("\\n", "\n"), encoding="utf-8")
+    with pytest.raises(ValueError, match="ヘッダー"):
+        read_csv(str(path))
