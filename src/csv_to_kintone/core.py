@@ -27,6 +27,7 @@ class ImportResult:
     created: int = 0
     updated: int = 0
     deleted: int = 0
+    skipped: int = 0
     backup_path: str | None = None
     error_message: str | None = None
 
@@ -211,6 +212,46 @@ def create_backup(app_id: int, records: list, directory: str):
             os.unlink(temp_name)
     return str(path)
 
+def _duplicate_error(error: Exception) -> bool:
+    """kintoneの重複禁止フィールド違反だけを判定します。"""
+    message = str(error)
+    return (
+        "CB_VA01" in message
+        and "値がほかのレコードと重複しています" in message
+        and "records[" in message
+    )
+
+
+def add_skipping_duplicates(client, app_id: int, records: list[dict]) -> tuple[int, int]:
+    """重複禁止エラーのレコードのみ除外して追加します。
+
+    Args:
+        client: kintoneクライアント。
+        app_id: 対象アプリID。
+        records: 最大100件の登録候補。
+    Returns:
+        (追加成功件数, 重複スキップ件数)。
+    Raises:
+        Exception: 重複以外のAPIエラー。成功済み追加は取り消されません。
+    Side effects:
+        kintoneへレコードを追加します。更新・削除は行いません。
+    """
+    if not records:
+        return 0, 0
+    try:
+        client.add(app_id, records)
+        return len(records), 0
+    except Exception as error:
+        if not _duplicate_error(error):
+            raise
+        if len(records) == 1:
+            return 0, 1
+        middle = len(records) // 2
+        left = add_skipping_duplicates(client, app_id, records[:middle])
+        right = add_skipping_duplicates(client, app_id, records[middle:])
+        return left[0] + right[0], left[1] + right[1]
+
+
 def execute_import(job: ImportJob, client, backup_dir: str, progress=None) -> ImportResult:
     """CSVを検証してUPSERTまたはバックアップ付き全件入替を実行します。"""
     result = ImportResult(job_id=job.id)
@@ -263,10 +304,11 @@ def execute_import(job: ImportJob, client, backup_dir: str, progress=None) -> Im
             for offset in range(0, len(added), 100):
                 batch = added[offset:offset + 100]
                 try:
-                    client.add(job.app_id, batch)
+                    created, skipped = add_skipping_duplicates(client, job.app_id, batch)
                 except Exception as error:
                     raise ValueError(f"追加バッチ {offset // 100 + 1}（追加対象 {offset + 1}～{offset + len(batch)}件目）失敗。既に追加済み {result.created}件: {error}") from error
-                result.created += len(batch)
+                result.created += created
+                result.skipped += skipped
                 processed += len(batch)
                 report(30 + int(69 * processed / max(total, 1)), "更新・追加を実行中")
         else:
