@@ -27,6 +27,7 @@ class App(ctk.CTk):
         self.after_ids = {}
         self.selected_job_id = None
         self.tray = None
+        self.progress_dialog = None
         self._toast = None
         self._toast_after_id = None
         self.protocol("WM_DELETE_WINDOW", self.withdraw)
@@ -226,15 +227,62 @@ class App(ctk.CTk):
 
     def scheduled(self, job):
         if not self.stopping and not self.paused and job.enabled:
-            self.run_job(job)
+            self.run_job(job, show_progress=False)
             self.schedule(job)
 
-    def run_job(self, job):
+    def _show_progress(self, job):
+        """手動実行時に進捗モーダルを表示します。"""
+        if self.progress_dialog is not None and self.progress_dialog.winfo_exists():
+            return None
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("インポート実行中")
+        dialog.geometry("420x190")
+        dialog.resizable(False, False)
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.protocol("WM_DELETE_WINDOW", lambda: None)
+        ctk.CTkLabel(dialog, text=job.name, font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(20, 8))
+        status = ctk.CTkLabel(dialog, text="準備中")
+        status.pack(pady=4)
+        bar = ctk.CTkProgressBar(dialog, width=350)
+        bar.pack(pady=8)
+        bar.set(0)
+        percentage = ctk.CTkLabel(dialog, text="0%")
+        percentage.pack(pady=4)
+        self.progress_dialog = dialog
+        return (dialog, status, bar, percentage)
+
+    def _update_progress(self, widgets, percent, stage):
+        """ワーカースレッドの通知をGUIに反映します。"""
+        if widgets is None:
+            return
+        dialog, status, bar, percentage = widgets
+        if dialog.winfo_exists():
+            value = max(0, min(100, int(percent)))
+            status.configure(text=stage)
+            bar.set(value / 100)
+            percentage.configure(text=f"{value}%")
+
+    def _finish_progress(self, widgets):
+        """完了・失敗時にモーダルを閉じます。"""
+        if widgets is not None:
+            dialog = widgets[0]
+            if dialog.winfo_exists():
+                dialog.grab_release()
+                dialog.destroy()
+            if self.progress_dialog is dialog:
+                self.progress_dialog = None
+
+    def run_job(self, job, show_progress=True):
         if self.stopping or not self.coordinator.acquire(job.id, job.app_id):
             return
+        widgets = self._show_progress(job) if show_progress else None
+        client = self.client()
+        def progress(percent, stage):
+            self.after(0, lambda p=percent, s=stage: self._update_progress(widgets, p, s))
         def task():
             try:
-                result = execute_import(job, self.client(), str(DATA_DIR / "backups"))
+                result = execute_import(job, client, str(DATA_DIR / "backups"), progress=progress)
                 message = f"{job.name}: {result.status} 追加{result.created} 更新{result.updated} 削除{result.deleted} {result.error_message or ''}"
                 self.after(0, lambda: self.log(message))
             except Exception as error:
@@ -242,6 +290,7 @@ class App(ctk.CTk):
                 self.after(0, lambda: self.log("実行エラー: " + message))
             finally:
                 self.coordinator.release(job.id, job.app_id)
+                self.after(0, lambda: self._finish_progress(widgets))
         threading.Thread(target=task, daemon=True).start()
 
     def log(self, message):
@@ -264,7 +313,7 @@ class App(ctk.CTk):
         """登録済みの有効ジョブを手動実行します。"""
         for job in jobs_from_settings(self.settings):
             if job.enabled:
-                self.run_job(job)
+                self.run_job(job, show_progress=False)
 
     def show_history(self):
         """実行履歴タブを表示します。"""
