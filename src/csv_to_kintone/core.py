@@ -3,6 +3,7 @@ import csv
 import json
 import os
 import tempfile
+from decimal import Decimal, InvalidOperation
 from datetime import date
 from openpyxl import load_workbook
 from dataclasses import dataclass, field
@@ -252,6 +253,31 @@ def add_skipping_duplicates(client, app_id: int, records: list[dict]) -> tuple[i
         return left[0] + right[0], left[1] + right[1]
 
 
+def normalize_duplicate_key(value, field_type: str) -> str:
+    """重複照合用の値を正規化します。数値型のみDecimalで表記差を吸収します。
+
+    Args:
+        value: CSVまたはkintoneから取得したフィールド値。
+        field_type: kintoneのフィールド種別。
+    Returns:
+        比較に使う文字列。元データは変更しません。
+    Raises:
+        ValueError: 数値型に不正な値が指定された場合。
+    Side effects:
+        なし。
+    """
+    raw = "" if value is None else str(value)
+    if field_type != "NUMBER" or not raw.strip():
+        return raw
+    try:
+        number = Decimal(raw.strip())
+    except InvalidOperation as error:
+        raise ValueError(f"数値型の重複チェックキーが不正です: {raw!r}") from error
+    if not number.is_finite():
+        raise ValueError(f"数値型の重複チェックキーが不正です: {raw!r}")
+    return str(number.normalize())
+
+
 def execute_import(job: ImportJob, client, backup_dir: str, progress=None) -> ImportResult:
     """CSVを検証してUPSERTまたはバックアップ付き全件入替を実行します。"""
     result = ImportResult(job_id=job.id)
@@ -271,15 +297,16 @@ def execute_import(job: ImportJob, client, backup_dir: str, progress=None) -> Im
         report(20, "既存レコードを取得中")
         existing = client.records(job.app_id)
         if keys:
+            key_types = [fields[codes[col]]["type"] for col in keys]
             index = {}
             for record in existing:
-                key = tuple(str(record[codes[col]]["value"]) for col in keys)
+                key = tuple(normalize_duplicate_key(record[codes[col]]["value"], kind) for col, kind in zip(keys, key_types))
                 if key in index:
                     raise ValueError("kintone側に重複キーがあります")
                 index[key] = record
             seen, added, updated = set(), [], []
             for row, record in zip(rows, payload):
-                key = tuple(row[col] for col in keys)
+                key = tuple(normalize_duplicate_key(row[col], kind) for col, kind in zip(keys, key_types))
                 if any(not value.strip() for value in key):
                     continue
                 if key in seen:
