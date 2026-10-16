@@ -129,3 +129,24 @@ def test_upsert_all_blank_keys_does_not_write(tmp_path):
     assert result.created == 0
     assert client.added == []
     assert client.deleted == []
+
+
+def test_progress_reports_completion(tmp_path):
+    path = tmp_path / "data.csv"
+    path.write_text("name\\nnew\\n".replace("\\n", "\n"), encoding="utf-8")
+    events = []
+    result = execute_import(ImportJob("id", "job", str(path), 1), FakeClient(), str(tmp_path), progress=lambda p, stage: events.append((p, stage)))
+    assert result.status == "success"
+    assert events[0][0] == 0
+    assert events[-1] == (100, "完了")
+    assert all(0 <= p <= 100 for p, _ in events)
+    assert all(a[0] <= b[0] for a, b in zip(events, events[1:]))
+
+
+def test_progress_failure_does_not_report_completion(tmp_path):
+    path = tmp_path / "empty.csv"
+    path.write_text("name\\n".replace("\\n", "\n"), encoding="utf-8")
+    events = []
+    result = execute_import(ImportJob("id", "job", str(path), 1), FakeClient(), str(tmp_path), progress=lambda p, stage: events.append((p, stage)))
+    assert result.status == "failed"
+    assert all(p != 100 for p, _ in events)
