@@ -56,8 +56,9 @@ class KintoneAPI:
         finally:
             try:
                 self.request("DELETE", "records/cursor.json", json={"id": cursor})
-            except requests.HTTPError:
-                pass
+            except ValueError as error:
+                if "HTTP 404 - GAIA_CN01:" not in str(error):
+                    raise
         return records
 
     def add(self, app_id: int, records: list[dict]) -> None:
