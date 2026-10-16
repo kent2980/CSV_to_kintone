@@ -16,7 +16,27 @@ class KintoneAPI:
     def request(self, method: str, endpoint: str, **kwargs):
         """HTTPエラーを例外に変換してJSONレスポンスを返します。"""
         response = self.session.request(method, self.base + "/k/v1/" + endpoint, timeout=60, **kwargs)
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as error:
+            try:
+                details = response.json()
+            except ValueError:
+                details = {}
+            if isinstance(details, dict):
+                code = details.get("code", "")
+                message = details.get("message", "")
+                errors = details.get("errors", {})
+                description = f"{code}: {message}".strip(": ")
+                if errors:
+                    description += f" | fields: {errors}"
+            else:
+                description = ""
+            if not description:
+                description = response.text[:500] or str(error)
+            raise ValueError(
+                f"kintone API {method} {endpoint}: HTTP {response.status_code} - {description}"
+            ) from error
         return response.json()
 
     def fields(self, app_id: int) -> dict:
