@@ -63,7 +63,7 @@ def read_input_file(path: str) -> tuple[list[str], list[dict[str, str]]]:
     Returns:
         (列名一覧, データ行の辞書一覧)。
     Raises:
-        ValueError: 未対応形式、空データ、不正ヘッダー、数式の検出時。
+        ValueError: 未対応形式、空データ、不正ヘッダー、計算結果が未保存の数式。
         OSError: ファイル読み込み失敗時。
     Side effects:
         ファイルを読み込みます。元ファイルは変更しません。
@@ -74,10 +74,15 @@ def read_input_file(path: str) -> tuple[list[str], list[dict[str, str]]]:
     if extension != ".xlsx":
         raise ValueError("未対応のファイル形式です。CSVまたはXLSXを指定してください")
     book = load_workbook(path, read_only=True, data_only=False)
+    cached_book = None
     try:
+        cached_book = load_workbook(path, read_only=True, data_only=True)
         sheet = book.worksheets[0]
-        iterator = sheet.iter_rows(values_only=True)
-        header = next(iterator, None)
+        iterator = sheet.iter_rows()
+        cached_iterator = cached_book.worksheets[0].iter_rows(values_only=True)
+        header_cells = next(iterator, None)
+        header = [cell.value for cell in header_cells] if header_cells else None
+        next(cached_iterator, None)
         if not header:
             raise ValueError("Excelヘッダーが不正です")
         columns = [str(value).strip() if value is not None else "" for value in header]
@@ -85,9 +90,16 @@ def read_input_file(path: str) -> tuple[list[str], list[dict[str, str]]]:
             raise ValueError("Excelヘッダーが空欄または重複しています")
         rows = []
         for number, cells in enumerate(iterator, start=2):
-            if any(isinstance(value, str) and value.startswith("=") for value in cells):
-                raise ValueError(f"Excelの数式は未対応です（{number}行目）")
-            values = [_cell_text(value) for value in cells]
+            cached_values = next(cached_iterator, ())
+            values = []
+            for index, cell in enumerate(cells):
+                cached = cached_values[index] if index < len(cached_values) else None
+                if cell.data_type == "f":
+                    if cached is None:
+                        raise ValueError(f"Excelの数式の計算結果が未保存です（{cell.coordinate}）")
+                    values.append(_cell_text(cached))
+                else:
+                    values.append(_cell_text(cell.value))
             if not any(value != "" for value in values):
                 continue
             if len(values) > len(columns) and any(value != "" for value in values[len(columns):]):
@@ -98,6 +110,8 @@ def read_input_file(path: str) -> tuple[list[str], list[dict[str, str]]]:
         return columns, rows
     finally:
         book.close()
+        if cached_book is not None:
+            cached_book.close()
 
 
 def resolve_field_codes(fields: dict, columns: list, mapping: dict):
