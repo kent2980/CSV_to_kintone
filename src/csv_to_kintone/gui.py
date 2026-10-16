@@ -41,12 +41,15 @@ class App(ctk.CTk):
 
     def build_connection(self):
         tab = self.tabs.tab("接続設定")
+        ctk.CTkLabel(tab, text="kintoneドメイン").pack(anchor="w", padx=16, pady=(12, 0))
         self.domain = ctk.CTkEntry(tab, placeholder_text="example.cybozu.com", width=420)
         self.domain.insert(0, self.settings.get("domain", ""))
         self.domain.pack(pady=8)
+        ctk.CTkLabel(tab, text="ログインユーザー名").pack(anchor="w", padx=16, pady=(8, 0))
         self.username = ctk.CTkEntry(tab, placeholder_text="ユーザー名", width=420)
         self.username.insert(0, self.settings.get("username", ""))
         self.username.pack(pady=8)
+        ctk.CTkLabel(tab, text="ログインパスワード").pack(anchor="w", padx=16, pady=(8, 0))
         self.password = ctk.CTkEntry(tab, placeholder_text="パスワード", show="*", width=420)
         try:
             self.password.insert(0, load_password())
