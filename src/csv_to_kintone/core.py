@@ -3,6 +3,8 @@ import csv
 import json
 import os
 import tempfile
+from datetime import date
+from openpyxl import load_workbook
 from dataclasses import dataclass, field
 from pathlib import Path
 from datetime import datetime
@@ -39,6 +41,62 @@ def read_csv(path: str):
     if not rows or any(None in row or None in row.values() for row in rows):
         raise ValueError("CSVが空、または不正な行があります")
     return columns, rows
+
+def _cell_text(value) -> str:
+    """Excelセルの値をkintone登録用の文字列へ変換します。"""
+    if value is None:
+        return ""
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    return str(value)
+
+
+def read_input_file(path: str) -> tuple[list[str], list[dict[str, str]]]:
+    """CSVまたはXLSXを読み、列名と文字列化したデータ行を返します。
+
+    Args:
+        path: CSVまたはXLSXのパス。XLSXは先頭シート・1行目をヘッダーとして読み込みます。
+    Returns:
+        (列名一覧, データ行の辞書一覧)。
+    Raises:
+        ValueError: 未対応形式、空データ、不正ヘッダー、数式の検出時。
+        OSError: ファイル読み込み失敗時。
+    Side effects:
+        ファイルを読み込みます。元ファイルは変更しません。
+    """
+    extension = Path(path).suffix.lower()
+    if extension == ".csv":
+        return read_csv(path)
+    if extension != ".xlsx":
+        raise ValueError("未対応のファイル形式です。CSVまたはXLSXを指定してください")
+    book = load_workbook(path, read_only=True, data_only=False)
+    try:
+        sheet = book.worksheets[0]
+        iterator = sheet.iter_rows(values_only=True)
+        header = next(iterator, None)
+        if not header:
+            raise ValueError("Excelヘッダーが不正です")
+        columns = [str(value).strip() if value is not None else "" for value in header]
+        if not all(columns) or len(columns) != len(set(columns)):
+            raise ValueError("Excelヘッダーが空欄または重複しています")
+        rows = []
+        for number, cells in enumerate(iterator, start=2):
+            if any(isinstance(value, str) and value.startswith("=") for value in cells):
+                raise ValueError(f"Excelの数式は未対応です（{number}行目）")
+            values = [_cell_text(value) for value in cells]
+            if not any(value != "" for value in values):
+                continue
+            if len(values) > len(columns) and any(value != "" for value in values[len(columns):]):
+                raise ValueError(f"Excelの列数が不正です（{number}行目）")
+            rows.append(dict(zip(columns, (values + [""] * len(columns))[:len(columns)])))
+        if not rows:
+            raise ValueError("Excelのデータが0件です。既存レコードは削除しません")
+        return columns, rows
+    finally:
+        book.close()
+
 
 def resolve_field_codes(fields: dict, columns: list, mapping: dict):
     """CSV列名とフィールドラベルを対応付けてコードを返します。"""
@@ -100,7 +158,7 @@ def execute_import(job: ImportJob, client, backup_dir: str) -> ImportResult:
     """CSVを検証してUPSERTまたはバックアップ付き全件入替を実行します。"""
     result = ImportResult(job_id=job.id)
     try:
-        columns, rows = read_csv(job.csv_path)
+        columns, rows = read_input_file(job.csv_path)
         fields = client.fields(job.app_id)
         codes = resolve_field_codes(fields, columns, job.field_mapping)
         keys = job.duplicate_columns
