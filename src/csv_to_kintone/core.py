@@ -46,7 +46,9 @@ def _cell_text(value) -> str:
     """Excelセルの値をkintone登録用の文字列へ変換します。"""
     if value is None:
         return ""
-    if isinstance(value, (datetime, date)):
+    if isinstance(value, datetime):
+        return value.date().isoformat() if value.time().isoformat() == "00:00:00" else value.isoformat()
+    if isinstance(value, date):
         return value.isoformat()
     if isinstance(value, bool):
         return "TRUE" if value else "FALSE"
