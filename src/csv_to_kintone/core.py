@@ -170,17 +170,23 @@ def create_backup(app_id: int, records: list, directory: str):
             os.unlink(temp_name)
     return str(path)
 
-def execute_import(job: ImportJob, client, backup_dir: str) -> ImportResult:
+def execute_import(job: ImportJob, client, backup_dir: str, progress=None) -> ImportResult:
     """CSVを検証してUPSERTまたはバックアップ付き全件入替を実行します。"""
     result = ImportResult(job_id=job.id)
+    def report(percent, stage):
+        if progress is not None:
+            progress(percent, stage)
     try:
+        report(0, "入力ファイルを読み込み中")
         columns, rows = read_input_file(job.csv_path)
+        report(10, "フィールド設定を確認中")
         fields = client.fields(job.app_id)
         codes = resolve_field_codes(fields, columns, job.field_mapping)
         keys = job.duplicate_columns
         if len(keys) != len(set(keys)) or any(key not in columns for key in keys):
             raise ValueError("重複チェック列が不正です")
         payload = [{codes[col]: {"value": row[col]} for col in columns} for row in rows]
+        report(20, "既存レコードを取得中")
         existing = client.records(job.app_id)
         if keys:
             index = {}
@@ -201,27 +207,42 @@ def execute_import(job: ImportJob, client, backup_dir: str) -> ImportResult:
                     updated.append({"id": index[key]["$id"]["value"], "record": record})
                 else:
                     added.append(record)
+            total = len(updated) + len(added)
+            processed = 0
+            report(30, "更新・追加を実行中")
             for offset in range(0, len(updated), 100):
                 batch = updated[offset:offset + 100]
                 client.update(job.app_id, batch)
                 result.updated += len(batch)
+                processed += len(batch)
+                report(30 + int(69 * processed / max(total, 1)), "更新・追加を実行中")
             for offset in range(0, len(added), 100):
                 batch = added[offset:offset + 100]
                 client.add(job.app_id, batch)
                 result.created += len(batch)
+                processed += len(batch)
+                report(30 + int(69 * processed / max(total, 1)), "更新・追加を実行中")
         else:
             validate_replace_safety(fields, existing, codes)
+            report(30, "バックアップを保存中")
             result.backup_path = create_backup(job.app_id, existing, backup_dir)
             ids = [record["$id"]["value"] for record in existing]
+            total = len(ids) + len(payload)
+            processed = 0
             for offset in range(0, len(ids), 100):
                 batch = ids[offset:offset + 100]
                 client.delete(job.app_id, batch)
                 result.deleted += len(batch)
+                processed += len(batch)
+                report(35 + int(64 * processed / max(total, 1)), "既存レコードを削除中")
             for offset in range(0, len(payload), 100):
                 batch = payload[offset:offset + 100]
                 client.add(job.app_id, batch)
                 result.created += len(batch)
+                processed += len(batch)
+                report(35 + int(64 * processed / max(total, 1)), "新規レコードを登録中")
         result.status = "success"
+        report(100, "完了")
     except Exception as error:
         result.error_message = str(error)
     return result
