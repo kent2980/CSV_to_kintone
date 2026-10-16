@@ -284,7 +284,10 @@ def execute_import(job: ImportJob, client, backup_dir: str, progress=None) -> Im
                 report(35 + int(64 * processed / max(total, 1)), "既存レコードを削除中")
             for offset in range(0, len(payload), 100):
                 batch = payload[offset:offset + 100]
-                client.add(job.app_id, batch)
+                try:
+                    client.add(job.app_id, batch)
+                except Exception as error:
+                    raise ValueError(f"追加バッチ {offset // 100 + 1}（追加対象 {offset + 1}～{offset + len(batch)}件目）失敗。既に追加済み {result.created}件: {error}") from error
                 result.created += len(batch)
                 processed += len(batch)
                 report(35 + int(64 * processed / max(total, 1)), "新規レコードを登録中")
