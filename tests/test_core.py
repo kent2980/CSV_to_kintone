@@ -150,3 +150,23 @@ def test_progress_failure_does_not_report_completion(tmp_path):
     result = execute_import(ImportJob("id", "job", str(path), 1), FakeClient(), str(tmp_path), progress=lambda p, stage: events.append((p, stage)))
     assert result.status == "failed"
     assert all(p != 100 for p, _ in events)
+
+
+def test_add_failure_reports_batch_and_partial_count(tmp_path):
+    path = tmp_path / "batch.csv"
+    path.write_text("name\\n".replace("\\n", "\n") + "".join(f"item{i}\\n".replace("\\n", "\n") for i in range(101)), encoding="utf-8")
+    client = FakeClient()
+    calls = 0
+    def add(app_id, records):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise ValueError("CB_VA01: invalid value")
+        client.added.extend(records)
+    client.add = add
+    result = execute_import(ImportJob("id", "job", str(path), 1), client, str(tmp_path))
+    assert result.status == "failed"
+    assert result.created == 100
+    assert "追加バッチ 2" in result.error_message
+    assert "101" in result.error_message
+    assert "CB_VA01" in result.error_message
