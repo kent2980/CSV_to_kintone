@@ -1,0 +1,238 @@
+from pathlib import Path
+import pytest
+from csv_to_kintone.core import ImportJob, execute_import, read_csv, resolve_field_codes
+
+def test_empty_csv_does_not_delete(tmp_path):
+    path = tmp_path / "empty.csv"
+    path.write_text("name\n", encoding="utf-8")
+    with pytest.raises(ValueError):
+        read_csv(str(path))
+
+def test_mapping_by_label():
+    assert resolve_field_codes({"code": {"label": "棚番", "type": "SINGLE_LINE_TEXT"}}, ["場所"], {"場所": "棚番"}) == {"場所": "code"}
+
+class FakeClient:
+    def __init__(self):
+        self.deleted = []
+        self.added = []
+    def fields(self, app_id):
+        return {"name": {"label": "name", "type": "SINGLE_LINE_TEXT"}}
+    def records(self, app_id):
+        return [{"$id": {"value": "1"}, "name": {"value": "old"}}]
+    def delete(self, app_id, ids):
+        self.deleted.extend(ids)
+    def add(self, app_id, records):
+        self.added.extend(records)
+    def update(self, app_id, records):
+        pass
+
+def test_replace_with_backup(tmp_path):
+    path = tmp_path / "data.csv"
+    path.write_text("name\nnew\n", encoding="utf-8")
+    client = FakeClient()
+    result = execute_import(ImportJob("id", "job", str(path), 1), client, str(tmp_path / "backups"))
+    assert result.status == "success"
+    assert result.deleted == 1
+    assert result.created == 1
+    assert result.backup_path is not None
+    assert client.deleted == ["1"]
+
+
+def test_backup_failure_prevents_delete(tmp_path, monkeypatch):
+    from csv_to_kintone import core
+    path = tmp_path / "data.csv"
+    path.write_text("name\\nnew\\n".replace("\\n", "\n"), encoding="utf-8")
+    client = FakeClient()
+    def fail(*args):
+        raise OSError("disk full")
+    monkeypatch.setattr(core, "create_backup", fail)
+    result = execute_import(ImportJob("id", "job", str(path), 1), client, str(tmp_path))
+    assert result.status == "failed"
+    assert client.deleted == []
+    assert client.added == []
+
+def test_unsupported_existing_field_prevents_delete(tmp_path):
+    path = tmp_path / "data.csv"
+    path.write_text("name\nnew\n", encoding="utf-8")
+    client = FakeClient()
+    client.records = lambda app_id: [{"$id": {"value": "1"}, "name": {"value": "old"}, "attachment": {"type": "FILE", "value": [{"fileKey": "abc"}]}}]
+    result = execute_import(ImportJob("id", "job", str(path), 1), client, str(tmp_path))
+    assert result.status == "failed"
+    assert client.deleted == []
+
+def test_missing_required_field_prevents_delete(tmp_path):
+    path = tmp_path / "data.csv"
+    path.write_text("name\nnew\n", encoding="utf-8")
+    client = FakeClient()
+    client.fields = lambda app_id: {
+        "name": {"label": "name", "type": "SINGLE_LINE_TEXT"},
+        "required": {"label": "required", "type": "SINGLE_LINE_TEXT", "required": True}
+    }
+    result = execute_import(ImportJob("id", "job", str(path), 1), client, str(tmp_path))
+    assert result.status == "failed"
+    assert client.deleted == []
+
+def test_failed_post_keeps_backup_and_reports_partial_failure(tmp_path):
+    path = tmp_path / "data.csv"
+    path.write_text("name\nnew\n", encoding="utf-8")
+    client = FakeClient()
+    client.add = lambda *args: (_ for _ in ()).throw(RuntimeError("write failure"))
+    result = execute_import(ImportJob("id", "job", str(path), 1), client, str(tmp_path))
+    assert result.status == "failed"
+    assert result.deleted == 1
+    assert result.backup_path is not None
+    assert Path(result.backup_path).exists()
+
+
+def test_upsert_skips_blank_duplicate_keys(tmp_path):
+    path = tmp_path / "data.csv"
+    path.write_text("name,code\\nnew,A\\nmissing, \\nother,B\\n".replace("\\n", "\n"), encoding="utf-8")
+    client = FakeClient()
+    client.fields = lambda app_id: {
+        "name": {"label": "name", "type": "SINGLE_LINE_TEXT"},
+        "code": {"label": "code", "type": "SINGLE_LINE_TEXT"},
+    }
+    client.records = lambda app_id: []
+    result = execute_import(ImportJob("id", "job", str(path), 1, duplicate_columns=["code"]), client, str(tmp_path))
+    assert result.status == "success"
+    assert result.created == 2
+    assert len(client.added) == 2
+    assert [r["code"]["value"] for r in client.added] == ["A", "B"]
+
+
+def test_upsert_skips_whitespace_in_composite_key(tmp_path):
+    path = tmp_path / "data.csv"
+    path.write_text("name,code\\n ,A\\nvalid,B\\n".replace("\\n", "\n"), encoding="utf-8")
+    client = FakeClient()
+    client.fields = lambda app_id: {
+        "name": {"label": "name", "type": "SINGLE_LINE_TEXT"},
+        "code": {"label": "code", "type": "SINGLE_LINE_TEXT"},
+    }
+    client.records = lambda app_id: []
+    result = execute_import(ImportJob("id", "job", str(path), 1, duplicate_columns=["name", "code"]), client, str(tmp_path))
+    assert result.status == "success"
+    assert result.created == 1
+    assert client.added[0]["name"]["value"] == "valid"
+
+
+def test_upsert_all_blank_keys_does_not_write(tmp_path):
+    path = tmp_path / "data.csv"
+    path.write_text("name,code\\nmissing, \\n".replace("\\n", "\n"), encoding="utf-8")
+    client = FakeClient()
+    client.fields = lambda app_id: {
+        "name": {"label": "name", "type": "SINGLE_LINE_TEXT"},
+        "code": {"label": "code", "type": "SINGLE_LINE_TEXT"},
+    }
+    client.records = lambda app_id: []
+    result = execute_import(ImportJob("id", "job", str(path), 1, duplicate_columns=["code"]), client, str(tmp_path))
+    assert result.status == "success"
+    assert result.created == 0
+    assert client.added == []
+    assert client.deleted == []
+
+
+def test_progress_reports_completion(tmp_path):
+    path = tmp_path / "data.csv"
+    path.write_text("name\\nnew\\n".replace("\\n", "\n"), encoding="utf-8")
+    events = []
+    result = execute_import(ImportJob("id", "job", str(path), 1), FakeClient(), str(tmp_path), progress=lambda p, stage: events.append((p, stage)))
+    assert result.status == "success"
+    assert events[0][0] == 0
+    assert events[-1] == (100, "完了")
+    assert all(0 <= p <= 100 for p, _ in events)
+    assert all(a[0] <= b[0] for a, b in zip(events, events[1:]))
+
+
+def test_progress_failure_does_not_report_completion(tmp_path):
+    path = tmp_path / "empty.csv"
+    path.write_text("name\\n".replace("\\n", "\n"), encoding="utf-8")
+    events = []
+    result = execute_import(ImportJob("id", "job", str(path), 1), FakeClient(), str(tmp_path), progress=lambda p, stage: events.append((p, stage)))
+    assert result.status == "failed"
+    assert all(p != 100 for p, _ in events)
+
+
+def test_add_failure_reports_batch_and_partial_count(tmp_path):
+    path = tmp_path / "batch.csv"
+    path.write_text("name\\n".replace("\\n", "\n") + "".join(f"item{i}\\n".replace("\\n", "\n") for i in range(101)), encoding="utf-8")
+    client = FakeClient()
+    calls = 0
+    def add(app_id, records):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise ValueError("CB_VA01: invalid value")
+        client.added.extend(records)
+    client.add = add
+    result = execute_import(ImportJob("id", "job", str(path), 1), client, str(tmp_path))
+    assert result.status == "failed"
+    assert result.created == 100
+    assert "追加バッチ 2" in result.error_message
+    assert "101" in result.error_message
+    assert "CB_VA01" in result.error_message
+
+
+def test_duplicate_unique_value_skips_only_conflicting_record(tmp_path):
+    path = tmp_path / "data.csv"
+    path.write_text("name\nold\nnew\n", encoding="utf-8")
+    client = FakeClient()
+    client.records = lambda app_id: []
+    def add(app_id, records):
+        if any(record["name"]["value"] == "old" for record in records):
+            raise ValueError("kintone API POST records.json: HTTP 400 - CB_VA01: 入力内容が正しくありません。 | fields: {\u0027records[0].name.value\u0027: {\u0027messages\u0027: [\u0027値がほかのレコードと重複しています。\u0027]}}")
+        client.added.extend(records)
+    client.add = add
+    result = execute_import(ImportJob("id", "job", str(path), 1), client, str(tmp_path))
+    assert result.status == "success"
+    assert result.created == 1
+    assert result.skipped == 1
+    assert [x["name"]["value"] for x in client.added] == ["new"]
+
+
+def test_nonduplicate_error_is_not_skipped(tmp_path):
+    path = tmp_path / "data.csv"
+    path.write_text("name\nnew\n", encoding="utf-8")
+    client = FakeClient()
+    client.records = lambda app_id: []
+    client.add = lambda *args: (_ for _ in ()).throw(ValueError("CB_VA01: required field missing"))
+    result = execute_import(ImportJob("id", "job", str(path), 1), client, str(tmp_path))
+    assert result.status == "failed"
+    assert result.skipped == 0
+
+def test_numeric_key_formats_match_existing_record_for_put(tmp_path):
+    path = tmp_path / "numeric.csv"
+    path.write_text("number,name\n00123,updated\n", encoding="utf-8")
+    client = FakeClient()
+    client.fields = lambda app_id: {
+        "number": {"label": "number", "type": "NUMBER"},
+        "name": {"label": "name", "type": "SINGLE_LINE_TEXT"},
+    }
+    client.records = lambda app_id: [
+        {"$id": {"value": "9"}, "number": {"value": "123.0"}, "name": {"value": "old"}}
+    ]
+    updates = []
+    client.update = lambda app_id, records: updates.extend(records)
+    job = ImportJob("id", "job", str(path), 1, duplicate_columns=["number"])
+    result = execute_import(job, client, str(tmp_path))
+    assert result.status == "success", result.error_message
+    assert result.created == 0
+    assert result.updated == 1
+    assert result.deleted == 0
+    assert client.added == []
+    assert updates[0]["id"] == "9"
+
+
+def test_numeric_key_duplicate_csv_format_is_rejected(tmp_path):
+    path = tmp_path / "numeric.csv"
+    path.write_text("number,name\n00123,first\n123.0,second\n", encoding="utf-8")
+    client = FakeClient()
+    client.fields = lambda app_id: {
+        "number": {"label": "number", "type": "NUMBER"},
+        "name": {"label": "name", "type": "SINGLE_LINE_TEXT"},
+    }
+    client.records = lambda app_id: []
+    job = ImportJob("id", "job", str(path), 1, duplicate_columns=["number"])
+    result = execute_import(job, client, str(tmp_path))
+    assert result.status == "failed"
+    assert "CSV内に重複キー" in result.error_message
+    assert client.added == []

@@ -1,0 +1,45 @@
+name: Windows CI
+
+on:
+  push:
+    branches:
+      - main
+      - feature/csv-import-windows-gui
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install project and test dependencies
+        run: python -m pip install -e ".[test]"
+
+      - name: Run tests
+        run: python -m pytest -q
+
+      - name: Build Windows executable
+        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name CSV_to_kintone --collect-all customtkinter --hidden-import win32crypt --paths src run_gui.py
+
+      - name: Smoke test packaged entrypoint imports
+        run: python -c "from csv_to_kintone.gui import main; assert callable(main)"
+
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: CSV_to_kintone-Windows
+          path: dist/CSV_to_kintone.exe
+          if-no-files-found: error
