@@ -1,6 +1,8 @@
 """CSVインポートの業務ロジック。"""
 import csv
 import json
+import os
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from datetime import datetime
@@ -54,20 +56,44 @@ def resolve_field_codes(fields: dict, columns: list, mapping: dict):
         raise ValueError("フィールドの割当が重複しています")
     return result
 
+def validate_replace_safety(fields: dict, records: list, codes: dict) -> None:
+    """削除前に未対応データ構造と未指定の必須項目を検証します。"""
+    unsupported = {"FILE", "SUBTABLE"}
+    if any(info.get("type") in unsupported for info in fields.values()):
+        raise ValueError("添付ファイルまたはサブテーブルを含むアプリの全件入替は未対応です")
+    for record in records:
+        if any(value.get("type") in unsupported for value in record.values() if isinstance(value, dict)):
+            raise ValueError("添付ファイルまたはサブテーブルを含むレコードの全件入替は未対応です")
+    missing = [
+        info.get("label", code)
+        for code, info in fields.items()
+        if info.get("required") and code not in codes.values()
+        and info.get("defaultValue") in (None, "")
+        and info.get("type") not in {"RECORD_NUMBER", "CREATED_TIME", "UPDATED_TIME", "CREATOR", "MODIFIER"}
+    ]
+    if missing:
+        raise ValueError("CSVに存在しない必須フィールド: " + ", ".join(missing))
+
+
 def create_backup(app_id: int, records: list, directory: str):
     """削除前の全レコードをJSONに保存し、再読込して検証します。"""
     folder = Path(directory)
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"app_{app_id}_{datetime.now():%Y%m%d_%H%M%S_%f}.json"
     content = {"app_id": app_id, "records": records}
-    temporary = path.with_suffix(".tmp")
+    fd, temp_name = tempfile.mkstemp(prefix=".backup_", suffix=".tmp", dir=folder)
     try:
-        temporary.write_text(json.dumps(content, ensure_ascii=False), encoding="utf-8")
-        if json.loads(temporary.read_text(encoding="utf-8")) != content:
-            raise ValueError("バックアップ検証に失敗")
-        temporary.replace(path)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(content, stream, ensure_ascii=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        with open(temp_name, encoding="utf-8") as stream:
+            if json.load(stream) != content:
+                raise ValueError("バックアップ検証に失敗")
+        os.replace(temp_name, path)
     finally:
-        temporary.unlink(missing_ok=True)
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
     return str(path)
 
 def execute_import(job: ImportJob, client, backup_dir: str) -> ImportResult:
@@ -75,7 +101,8 @@ def execute_import(job: ImportJob, client, backup_dir: str) -> ImportResult:
     result = ImportResult(job_id=job.id)
     try:
         columns, rows = read_csv(job.csv_path)
-        codes = resolve_field_codes(client.fields(job.app_id), columns, job.field_mapping)
+        fields = client.fields(job.app_id)
+        codes = resolve_field_codes(fields, columns, job.field_mapping)
         keys = job.duplicate_columns
         if len(keys) != len(set(keys)) or any(key not in columns for key in keys):
             raise ValueError("重複チェック列が不正です")
@@ -107,6 +134,7 @@ def execute_import(job: ImportJob, client, backup_dir: str) -> ImportResult:
                 client.add(job.app_id, batch)
                 result.created += len(batch)
         else:
+            validate_replace_safety(fields, existing, codes)
             result.backup_path = create_backup(job.app_id, existing, backup_dir)
             ids = [record["$id"]["value"] for record in existing]
             for offset in range(0, len(ids), 100):
