@@ -27,6 +27,8 @@ class App(ctk.CTk):
         self.after_ids = {}
         self.selected_job_id = None
         self.tray = None
+        self._toast = None
+        self._toast_after_id = None
         self.protocol("WM_DELETE_WINDOW", self.withdraw)
         self.tabs = ctk.CTkTabview(self)
         self.tabs.pack(fill="both", expand=True, padx=12, pady=12)
@@ -60,10 +62,17 @@ class App(ctk.CTk):
         ctk.CTkButton(tab, text="接続テスト", command=self.test_connection).pack(pady=8)
 
     def save_connection(self):
-        self.settings["domain"] = self.domain.get().strip()
-        self.settings["username"] = self.username.get().strip()
-        save_password(self.password.get())
-        save_settings(self.settings)
+        """接続設定を保存し、結果をトーストで通知します。"""
+        try:
+            self.settings["domain"] = self.domain.get().strip()
+            self.settings["username"] = self.username.get().strip()
+            save_password(self.password.get())
+            save_settings(self.settings)
+        except Exception as error:
+            self.notify("接続情報の保存に失敗しました", "error")
+            self.log("接続情報の保存に失敗: " + str(error))
+            return
+        self.notify("接続情報を保存しました", "success")
         self.log("接続情報を保存しました")
 
     def client(self):
@@ -73,11 +82,49 @@ class App(ctk.CTk):
         def task():
             try:
                 self.client().request("GET", "apps.json", params={"limit": 1})
+                self.after(0, lambda: self.notify("接続テスト成功", "success"))
                 self.after(0, lambda: self.log("接続テスト成功"))
             except Exception as error:
                 message = str(error)
+                self.after(0, lambda: self.notify("接続テスト失敗", "error"))
                 self.after(0, lambda: self.log("接続テスト失敗: " + message))
         threading.Thread(target=task, daemon=True).start()
+
+    def notify(self, message: str, level: str = "success", duration_ms: int = 3500) -> None:
+        """メイン画面右下に非モーダル通知を表示し、指定時間後に消します。
+
+        Args:
+            message: 通知文。
+            level: success または error。
+            duration_ms: 表示時間（ミリ秒）。
+        Returns:
+            なし。
+        Side effects:
+            既存トーストを置き換え、Tkのafterで自動消去します。
+        """
+        if self._toast_after_id is not None:
+            self.after_cancel(self._toast_after_id)
+            self._toast_after_id = None
+        if self._toast is not None:
+            self._toast.destroy()
+        color = ("#176b45", "#176b45") if level == "success" else ("#a12c32", "#a12c32")
+        self._toast = ctk.CTkFrame(self, fg_color=color, corner_radius=10)
+        ctk.CTkLabel(
+            self._toast,
+            text=("✓  " if level == "success" else "⚠  ") + message,
+            text_color="white",
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(padx=18, pady=12)
+        self._toast.place(relx=0.98, rely=0.97, anchor="se")
+        self._toast.lift()
+        self._toast_after_id = self.after(duration_ms, self._dismiss_toast)
+
+    def _dismiss_toast(self) -> None:
+        """表示中のトーストを消去します。"""
+        if self._toast is not None:
+            self._toast.destroy()
+            self._toast = None
+        self._toast_after_id = None
 
     def build_editor(self):
         tab = self.tabs.tab("インポート設定")
