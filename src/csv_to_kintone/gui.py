@@ -283,7 +283,7 @@ class App(ctk.CTk):
         def task():
             try:
                 result = execute_import(job, client, str(DATA_DIR / "backups"), progress=progress)
-                message = f"{job.name}: {result.status} 追加{result.created} 更新{result.updated} 削除{result.deleted} {result.error_message or ''}"
+                message = f"{job.name}: {result.status} 追加{result.created} 更新{result.updated} 削除{result.deleted} 重複スキップ{result.skipped} {result.error_message or ''}"
                 self.after(0, lambda: self.log(message))
             except Exception as error:
                 message = str(error)
