@@ -198,3 +198,41 @@ def test_nonduplicate_error_is_not_skipped(tmp_path):
     result = execute_import(ImportJob("id", "job", str(path), 1), client, str(tmp_path))
     assert result.status == "failed"
     assert result.skipped == 0
+
+def test_numeric_key_formats_match_existing_record_for_put(tmp_path):
+    path = tmp_path / "numeric.csv"
+    path.write_text("number,name\n00123,updated\n", encoding="utf-8")
+    client = FakeClient()
+    client.fields = lambda app_id: {
+        "number": {"label": "number", "type": "NUMBER"},
+        "name": {"label": "name", "type": "SINGLE_LINE_TEXT"},
+    }
+    client.records = lambda app_id: [
+        {"$id": {"value": "9"}, "number": {"value": "123.0"}, "name": {"value": "old"}}
+    ]
+    updates = []
+    client.update = lambda app_id, records: updates.extend(records)
+    job = ImportJob("id", "job", str(path), 1, duplicate_columns=["number"])
+    result = execute_import(job, client, str(tmp_path))
+    assert result.status == "success", result.error_message
+    assert result.created == 0
+    assert result.updated == 1
+    assert result.deleted == 0
+    assert client.added == []
+    assert updates[0]["id"] == "9"
+
+
+def test_numeric_key_duplicate_csv_format_is_rejected(tmp_path):
+    path = tmp_path / "numeric.csv"
+    path.write_text("number,name\n00123,first\n123.0,second\n", encoding="utf-8")
+    client = FakeClient()
+    client.fields = lambda app_id: {
+        "number": {"label": "number", "type": "NUMBER"},
+        "name": {"label": "name", "type": "SINGLE_LINE_TEXT"},
+    }
+    client.records = lambda app_id: []
+    job = ImportJob("id", "job", str(path), 1, duplicate_columns=["number"])
+    result = execute_import(job, client, str(tmp_path))
+    assert result.status == "failed"
+    assert "CSV内に重複キー" in result.error_message
+    assert client.added == []
