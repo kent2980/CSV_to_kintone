@@ -82,3 +82,50 @@ def test_failed_post_keeps_backup_and_reports_partial_failure(tmp_path):
     assert result.deleted == 1
     assert result.backup_path is not None
     assert Path(result.backup_path).exists()
+
+
+def test_upsert_skips_blank_duplicate_keys(tmp_path):
+    path = tmp_path / "data.csv"
+    path.write_text("name,code\\nnew,A\\nmissing, \\nother,B\\n".replace("\\n", "\n"), encoding="utf-8")
+    client = FakeClient()
+    client.fields = lambda app_id: {
+        "name": {"label": "name", "type": "SINGLE_LINE_TEXT"},
+        "code": {"label": "code", "type": "SINGLE_LINE_TEXT"},
+    }
+    client.records = lambda app_id: []
+    result = execute_import(ImportJob("id", "job", str(path), 1, duplicate_columns=["code"]), client, str(tmp_path))
+    assert result.status == "success"
+    assert result.created == 2
+    assert len(client.added) == 2
+    assert [r["code"]["value"] for r in client.added] == ["A", "B"]
+
+
+def test_upsert_skips_whitespace_in_composite_key(tmp_path):
+    path = tmp_path / "data.csv"
+    path.write_text("name,code\\n ,A\\nvalid,B\\n".replace("\\n", "\n"), encoding="utf-8")
+    client = FakeClient()
+    client.fields = lambda app_id: {
+        "name": {"label": "name", "type": "SINGLE_LINE_TEXT"},
+        "code": {"label": "code", "type": "SINGLE_LINE_TEXT"},
+    }
+    client.records = lambda app_id: []
+    result = execute_import(ImportJob("id", "job", str(path), 1, duplicate_columns=["name", "code"]), client, str(tmp_path))
+    assert result.status == "success"
+    assert result.created == 1
+    assert client.added[0]["name"]["value"] == "valid"
+
+
+def test_upsert_all_blank_keys_does_not_write(tmp_path):
+    path = tmp_path / "data.csv"
+    path.write_text("name,code\\nmissing, \\n".replace("\\n", "\n"), encoding="utf-8")
+    client = FakeClient()
+    client.fields = lambda app_id: {
+        "name": {"label": "name", "type": "SINGLE_LINE_TEXT"},
+        "code": {"label": "code", "type": "SINGLE_LINE_TEXT"},
+    }
+    client.records = lambda app_id: []
+    result = execute_import(ImportJob("id", "job", str(path), 1, duplicate_columns=["code"]), client, str(tmp_path))
+    assert result.status == "success"
+    assert result.created == 0
+    assert client.added == []
+    assert client.deleted == []
